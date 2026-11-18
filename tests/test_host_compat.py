@@ -75,7 +75,10 @@ class TestInstallUninstallLifecycle:
         original_cls = manager_mod.ScrollContextManager
         original_fn = command_handler_cls._stored_scroll_summary_text
         original_compact = command_handler_cls._process_compact
-        status = install()
+        # shadow 模式下全三点位安装（patch 3 为 shadow 专属，见下）
+        status = install(
+            config_mod.CompactorConfig(mode=config_mod.MODE_SHADOW),
+        )
         assert status == {
             "patch1": "installed",
             "patch2": "installed",
@@ -103,6 +106,42 @@ class TestInstallUninstallLifecycle:
         assert not hasattr(
             command_handler_cls, "_compactor_original_process_compact",
         )
+
+    def test_replace_mode_skips_patch3(self, manager_mod, command_handler_cls):
+        """replace 模式（默认）：patch 3 不安装，/compact new 回归原版。"""
+        original_compact = command_handler_cls._process_compact
+        status = install()  # 默认 CompactorConfig = replace
+        assert status["patch1"] == "installed"
+        assert status["patch2"] == "installed"
+        assert status["patch3"] == "skipped(mode=replace)"
+        # /compact new 拦截未生效：_process_compact 保持原方法
+        assert command_handler_cls._process_compact is original_compact
+        assert not hasattr(
+            command_handler_cls, "_compactor_original_process_compact",
+        )
+        uninstall()
+        # 未打的点位无哨兵残留
+        assert not hasattr(
+            command_handler_cls, "_compactor_original_process_compact",
+        )
+
+    def test_replace_over_shadow_residual_restores(
+        self, manager_mod, command_handler_cls,
+    ):
+        """shadow 残留 + install(replace) → 就地恢复 patch 3，诊断一致。"""
+        original_compact = command_handler_cls._process_compact
+        install(config_mod.CompactorConfig(mode=config_mod.MODE_SHADOW))
+        # 此刻 patch 3 已打（shadow 专属拦截在位）
+        assert command_handler_cls._process_compact is not original_compact
+        status = install()  # replace（默认），无 unload 周期的异常路径
+        assert status["patch3"] == "residual-restored"
+        # 残留 wrapper 已恢复原方法，哨兵已清
+        assert command_handler_cls._process_compact is original_compact
+        assert not hasattr(
+            command_handler_cls, "_compactor_original_process_compact",
+        )
+        uninstall()
+        assert command_handler_cls._process_compact is original_compact
 
     def test_install_is_idempotent(self, manager_mod):
         first = install()

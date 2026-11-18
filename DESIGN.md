@@ -1,6 +1,6 @@
 # Context Compactor Refined — 设计稿
 
-> 状态：v3 定稿（2026-11-18 三路对抗复审 + D1-D6 拍板完结）｜宿主：QwenPaw 2.3.0（editable 安装）｜SDK：1.0.0
+> 状态：v3 定稿（2026-11-18 三路对抗复审 + D1-D7 拍板完结）｜宿主：QwenPaw 2.3.0（editable 安装）｜SDK：1.0.0
 > 作者：onesixth
 
 ## 0. 一句话定位
@@ -11,7 +11,7 @@
 1. **prefix cache 全量命中至上**：摘要请求复用 `prepare_model_input(agent)` 输出（与主请求同源构造）+ `tool_choice=ToolChoice(mode="none")`——前缀与主请求逐字节对齐；接受工具输出指针形态代价（D1）。
 2. **失败即中止压缩并返回错误信息**：摘要生成失败（校验不过/超时/模型错误）→ 异常传播，驱逐不发生；无冷却期、无静默降级、**无超预算降级路径（D2，故意）**。
 3. **中文摘要**：5 个必备章节用中文标题；摘要正文中文（所有 language 配置统一中文，有意行为）。
-4. **三 patch 点位**：`ScrollContextManager`（压缩行为，shadow/replace 双模式分流）+ `CommandHandler._stored_scroll_summary_text`（/compact_str 显示，D4）+ `CommandHandler._process_compact`（/compact new 一次性触发，D5），三者都带版本自检与卸载恢复。
+4. **点位精准注入**：`ScrollContextManager`（压缩行为，shadow/replace 双模式分流）+ `CommandHandler._stored_scroll_summary_text`（/compact_str 显示，D4）常驻 + `CommandHandler._process_compact`（/compact new 一次性触发，D5/D7）**仅 shadow 模式安装**（replace 下回归宿主原生行为）；各点位版本自检与卸载恢复。
 
 ---
 
@@ -49,7 +49,7 @@
 ```
 宿主 scroll 管线（compress() 9 步）
   1 persist  2 trigger  3 pre-fold  4 split
-  5 【summarize】←── 本插件替换此步（shadow 模式默认透传原版；/compact new 或 replace 模式走新方案；失败 → 异常传播 → 6-9 步自然跳过）
+  5 【summarize】←── 本插件替换此步（shadow 模式默认透传原版，`/compact new` 走新方案；replace 模式全量走新方案，`/compact new` 回归原生——D7；失败 → 异常传播 → 6-9 步自然跳过）
   6 index-evict  7 live-fold  8 think-fold  9 active-fold
         │
         ▼  注入点：patch 类（不是 patch 函数）
@@ -206,7 +206,8 @@ _update_continuation_summary_inner:
     新方案生成循环
 ```
 
-**patch 点 3（D5）**：`CommandHandler._process_compact` 包装——
+**patch 点 3（D5/D7）**：`CommandHandler._process_compact` 包装，**shadow 模式专属**（D7：replace 下不安装，/compact new 回归宿主原生行为）——
+- **安装面按 mode 分流（D7，v0.2.2）**：仅 `shadow` 模式安装本点位；`replace`（默认）不安装（install 状态报 `skipped(mode=replace)`，`/compact new` 的 args 经宿主 `_compact_instructions` 进 hint 通道）；若 shadow 残留 wrapper 在位，install(replace) 就地恢复并报 `residual-restored`；
 - `args.strip() == "new"`（**严格匹配**，hint 语义零破坏：`/compact new xxx` 不触发、args 原样走 hint 通道）→ 触发 + **args 置空传原方法**（防 "new" 漏成 hint 噪音）；
 - flag 传递双路径：agent 分支 `self._agent._context_manager`（marker 校验）设实例 flag；agent-less 分支模块级 `_pending_new_once`（standalone manager 在同调用栈内构造时读取并立即清除）；
 - finally 兜底复位——compress 在第 1-4 步失败时 flag 不泄漏到自动压缩；
@@ -322,9 +323,9 @@ _update_continuation_summary_inner:
 ```
 qwenpaw-plugin-context-compactor-refined/
 ├── plugin.json           # manifest（SDK 1.0.0 / type=general / capabilities=[resources]）
-├── plugin.py             # 入口：register + on_activate(install 三点位) + defer(uninstall 逆序恢复)
-├── host_compat.py        # 三 patch 点：ScrollContextManager 类 + CommandHandler._stored_scroll_summary_text
-│                         #   + CommandHandler._process_compact（/compact new，D5）
+├── plugin.py             # 入口：register + on_activate(install 按模式打点) + defer(uninstall 逆序恢复)
+├── host_compat.py        # patch 点：ScrollContextManager 类 + CommandHandler._stored_scroll_summary_text
+│                         #   + CommandHandler._process_compact（/compact new，D5/D7——仅 shadow 安装）
 │                         #   三层查找面版本自检（点位独立降级）+ 幂等哨兵 + uninstall 恢复
 ├── summary_manager.py    # CustomScrollManager(ScrollContextManager)：3 override + SummaryGenerationFailed
 ├── summary_object.py     # FreeTextSummary 适配器（含 patch 点 2 使用的 from_dict/render）
@@ -338,7 +339,7 @@ qwenpaw-plugin-context-compactor-refined/
     ├── conftest.py       # sys.path 快照恢复（TestHost 副作用）
     ├── test_generation.py
     ├── test_summary_object.py
-    ├── test_host_compat.py   # 双点位：自检/幂等/独立降级/恢复
+    ├── test_host_compat.py   # 三点位（patch 3 按 mode 分流）：自检/幂等/独立降级/恢复
     └── test_sdk_host.py      # （未实现——原计划 PluginTestHost 集成；当前由真机验收覆盖）
 ```
 
@@ -348,7 +349,7 @@ qwenpaw-plugin-context-compactor-refined/
 
 | 键 | 默认 | 说明 |
 |----|------|------|
-| `mode` | `replace` | 2026-11-18 验收完成后默认全量替换（D5）；`shadow`=调试期透传模式（已退役，保留待配） |
+| `mode` | `replace` | 默认全量替换（D5）；`shadow`=调试用透传模式（默认透传原版，仅 `/compact new` 触发新管线并注册其拦截；D7 起 replace 下不注册） |
 | `sections` | `["当前任务","当前状态","约束","决定","待办"]` | 必备章节（中文，Q1 定案） |
 | `max_retries` | `3` | 重新生成上限（首次 1 + 重试 3 = 共 4 次尝试，Q2 定案） |
 | `output_tokens` | `0` | 摘要输出预算：0 = 按宿主公式 `max(256, min(4000, ctx//4))` 推导 |
@@ -366,7 +367,7 @@ qwenpaw-plugin-context-compactor-refined/
 | 层 | 覆盖 |
 |----|------|
 | 单元 | 生成循环（mock `agent.model` 流式/非流式：成功/缺章节对话内重试/4 次全败 raise/provider 400 立即 raise/超时 raise）、FreeTextSummary 四接口、章节校验（中文 heading 正则含尾随冒号变体）、提问模板（focus_hint 插槽 + 防污染句）、covered_seq 合并、入口 guard（new_span None） |
-| host_compat | 双点位自检（SUMMARY_PREFIX 模块级/实例属性签名/类方法/CommandHandler 属性）、**点位独立降级**（点 2 缺失不阻塞点 1）、幂等 install、uninstall 逆序恢复 |
+| host_compat | 三点位自检（patch 3 按 mode 分流；SUMMARY_PREFIX 模块级/实例属性签名/类方法/CommandHandler 属性）、**点位独立降级**（点 2 缺失不阻塞点 1）、幂等 install、uninstall 逆序恢复 |
 | patch 点 2 | 包装函数三分支（活 agent 回落/free_text 渲染/其余回落原方法）、/compact_str 显示摘要文本 |
 | SDK 集成 | （未实现）原计划 PluginTestHost：load→register→on_activate→unload；当前 patch 生效由真机验收覆盖（三点位哨兵 + 宿主内验证），另有 patch 点自检函数在激活时运行 |
 | 真机验收 | ① 长会话自然触发压缩 → 中文摘要落位 + `/compact` 报告 + recall 可用 + 会话重启摘要恢复；② **cache 命中**：读 `usage.cache_input_tokens` 确认摘要请求命中主对话前缀（核心验收项）；③ 失败路径三落点（/compact 报错、工具路径 ToolChunk 含「勿重试」指引、自动路径回合失败）+ 上下文原样 + 4 次尝试计费正确；④ `ToolChoice(mode="none")` wire 形态与 provider 支持性 + 连续 user 消息兼容性；⑤ **/compact_str**（agent-less 场景）显示摘要文本（D4 验收）；⑥ 超预算场景观察 provider 400 → 压缩失败错误信息可读（D2 行为确认，不做降级） |
@@ -439,3 +440,9 @@ qwenpaw-plugin-context-compactor-refined/
 | # | 问题 | 决定 |
 |---|------|------|
 | **D6** | 摘要末端是否固化 recall 指引、如何实现 | **代码级固化追加**（v0.2.1）：成功出口纯代码追加时间戳（当地时间+UTC 偏移格式，作者指定）+ recall 三件套即用指令（含 covered 区间）；不做 config 开关（YAGNI 写死）、不进提示词（防措辞漂移）、追加在章节校验之后（模型产出保持纯净）；covered 异常降级通用指引绝不抛 |
+
+**作者拍板（第六轮，2026-11-18，v0.2.2）**：
+
+| # | 问题 | 决定 |
+|---|------|------|
+| **D7** | replace 模式下 /compact new 的注册 | **解除注册（patch 3 改为 shadow 专属）**：install 按 mode 分流——replace（默认）不安装 patch 3，/compact new 回归宿主原生行为；shadow 安装（一次性对照）。uninstall 哨兵机制天然幂等，无需改恢复逻辑 |

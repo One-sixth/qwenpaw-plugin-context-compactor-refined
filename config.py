@@ -18,7 +18,7 @@ CACHE_NO_TOOLS = "no_tools"              # provider 不支持 tool_choice="none"
 
 # mode 取值（D5 拍板：临时调试机制）
 MODE_SHADOW = "shadow"    # 调试期：默认透传原版，仅 /compact new 一次性触发新方案
-MODE_REPLACE = "replace"  # 验收完成后：全部压缩走新方案（/compact new 参数无害）
+MODE_REPLACE = "replace"  # 验收完成后：全部压缩走新方案；/compact new 拦截不安装（D7），args 原样进宿主 hint 通道
 
 _VALID_MODES = (MODE_SHADOW, MODE_REPLACE)
 _VALID_CACHE_MODES = (CACHE_PRESERVE_TOOLS, CACHE_NO_TOOLS)

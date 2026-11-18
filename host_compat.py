@@ -29,7 +29,7 @@ import logging
 from typing import Any, Callable
 
 from . import summary_manager
-from .config import CompactorConfig
+from .config import MODE_REPLACE, CompactorConfig
 from .summary_object import FREE_TEXT_MODE, FreeTextSummary
 
 logger = logging.getLogger(__name__)
@@ -227,8 +227,9 @@ def make_compact_command_wrapper(
 # ---------------------------------------------------------------------------
 
 def install(config: CompactorConfig | None = None) -> dict[str, str]:
-    """Install all three patch points. Never raises into the host: per-point
-    failures degrade to warnings. Returns a per-point status dict."""
+    """Install patch points per config.mode (point 3 only in shadow mode,
+    D7). Never raises into the host: per-point failures degrade to
+    warnings. Returns a per-point status dict."""
     if config is None:
         config = CompactorConfig()
     status = {
@@ -298,7 +299,10 @@ def install(config: CompactorConfig | None = None) -> dict[str, str]:
                     "context-compactor: patch point 2 skipped: %s", detail,
                 )
 
-    # ---- patch point 3: CommandHandler._process_compact (D5) ----
+    # ---- patch point 3: CommandHandler._process_compact (D5/D7) ----
+    # shadow 专属：/compact new 一次性触发新管线。replace（默认）不安装
+    # ——/compact new 回归宿主原生行为；若此前 shadow 残留 wrapper，就地
+    # 恢复（诊断面与实际行为保持一致）。
     try:
         from qwenpaw.agents.command_handler import CommandHandler
     except Exception as exc:
@@ -308,7 +312,34 @@ def install(config: CompactorConfig | None = None) -> dict[str, str]:
     else:
         current = getattr(CommandHandler, "_process_compact", None)
         if is_patched_command_func(current):
-            status["patch3"] = "already"
+            if config.mode == MODE_REPLACE:
+                # shadow 残留：就地恢复原方法，不留静默拦截
+                original = getattr(
+                    CommandHandler, _SENTINEL_COMPACT_ATTR, None,
+                )
+                if original is not None:
+                    CommandHandler._process_compact = original
+                    status["patch3"] = "residual-restored"
+                    if hasattr(CommandHandler, _SENTINEL_COMPACT_ATTR):
+                        delattr(CommandHandler, _SENTINEL_COMPACT_ATTR)
+                    logger.warning(
+                        "context-compactor: patch point 3 residual wrapper "
+                        "restored (mode=replace)",
+                    )
+                else:
+                    status["patch3"] = "residual-active"
+                    logger.warning(
+                        "context-compactor: patch point 3 residual wrapper "
+                        "active but sentinel missing (mode=replace)",
+                    )
+            else:
+                status["patch3"] = "already"
+        elif config.mode == MODE_REPLACE:
+            status["patch3"] = "skipped(mode=replace)"
+            logger.info(
+                "context-compactor: patch point 3 not installed "
+                "(mode=replace; /compact new stays with upstream behavior)",
+            )
         else:
             ok, detail = check_compact_command_compat()
             if ok:
@@ -354,7 +385,8 @@ def uninstall() -> dict[str, str]:
                 status["patch3"] = "restored"
             else:
                 status["patch3"] = "sentinel-missing"
-            delattr(CommandHandler, _SENTINEL_COMPACT_ATTR)
+            if hasattr(CommandHandler, _SENTINEL_COMPACT_ATTR):
+                delattr(CommandHandler, _SENTINEL_COMPACT_ATTR)
         elif hasattr(CommandHandler, _SENTINEL_COMPACT_ATTR):
             delattr(CommandHandler, _SENTINEL_COMPACT_ATTR)
 
@@ -373,7 +405,8 @@ def uninstall() -> dict[str, str]:
             else:
                 # 哨兵丢失（理论不可能）：宁可留着包装也不置 None
                 status["patch2"] = "sentinel-missing"
-            delattr(CommandHandler, _SENTINEL_CMD_ATTR)
+            if hasattr(CommandHandler, _SENTINEL_CMD_ATTR):
+                delattr(CommandHandler, _SENTINEL_CMD_ATTR)
         elif hasattr(CommandHandler, _SENTINEL_CMD_ATTR):
             delattr(CommandHandler, _SENTINEL_CMD_ATTR)
 
@@ -391,7 +424,8 @@ def uninstall() -> dict[str, str]:
                 status["patch1"] = "restored"
             else:
                 status["patch1"] = "sentinel-missing"
-            delattr(manager_mod, _SENTINEL_MANAGER_ATTR)
+            if hasattr(manager_mod, _SENTINEL_MANAGER_ATTR):
+                delattr(manager_mod, _SENTINEL_MANAGER_ATTR)
         elif hasattr(manager_mod, _SENTINEL_MANAGER_ATTR):
             delattr(manager_mod, _SENTINEL_MANAGER_ATTR)
 

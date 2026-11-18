@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """Context Compactor Refined 插件入口（SDK 形态，qwenpaw 2.3.0+）。
 
-无工具 general 插件：激活时打三 patch 点（ScrollContextManager 类 +
-CommandHandler._stored_scroll_summary_text + CommandHandler._process_compact），
-卸载时逆序恢复。
+无工具 general 插件：激活时打 patch 点（ScrollContextManager 类 +
+CommandHandler._stored_scroll_summary_text 常驻；CommandHandler._process_
+compact 仅 shadow 模式安装——D7），卸载时逆序恢复。
 
 生命周期契约（SDK 1.0.0）：``register()`` 仅声明（on_activate 注册），
 资源创建 / 补丁安装必须进 ``on_activate``；卸载清理用
@@ -32,12 +32,12 @@ class ContextCompactorRefinedPlugin:
     """Plugin main class (SDK Plugin Protocol)."""
 
     def register(self, context: PluginContext) -> None:
-        logger.info("注册 Context Compactor Refined 插件（三 patch 点）...")
+        logger.info("注册 Context Compactor Refined 插件（按模式打点）...")
         context.on_activate(self._activate)
         logger.info("✓ Context Compactor Refined 插件注册完成")
 
     def _activate(self, context: PluginContext) -> None:
-        """Activate: resolve config, install both patch points, register
+        """Activate: resolve config, install patch points per mode, register
         the reverse-order uninstall via resources.defer."""
         config = self._resolve_config(context)
         if config is None:

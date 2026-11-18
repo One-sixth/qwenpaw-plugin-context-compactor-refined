@@ -1,7 +1,7 @@
 {
   "id": "qwenpaw-plugin-context-compactor-refined",
   "name": "QwenPaw上下文压缩改良",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "type": "general",
   "description": "改良 QwenPaw 上下文压缩：压缩摘要请求与主对话前缀逐字节对齐，保持高缓存命中（官方版几乎完全不命中，压缩即全量重新计费、又慢又贵）；模型基于真实对话续写五章节中文摘要，压缩失败则完全保留原始上下文。",
   "author": "onesixth",

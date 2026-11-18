@@ -5,8 +5,9 @@
 ## 实现状态
 
 - **v0.2.1 已热装：摘要末端固化块生效**（2026-11-18 晚）。成功出口（generation.py `_generation_attempts` 内）纯代码追加 `_append_recall_hint(reply, covered)`——「上下文压缩已完成。当前时间：YYYY-MM-DD HH:MM:SS +08:00（当地时间+UTC 偏移）」+ 📎 recall_history 三件套即用指令（expand 含 covered 累积区间 / search / recall_tool）；covered 异常（如倒挂 lo>hi）降级 RECALL_HINT_GENERIC 通用指引（指向压缩地图），绝不抛。校验针对模型原稿，固化块在 missing_sections 通过后追加，重试对话里的失败稿保持原样。零 tokens、字节级一致、不依赖模型遵守提示词。
+- **v0.2.2 已热装：patch 3 改为 shadow 专属**（2026-11-18）。install 按 mode 分流——replace（默认）不安装 `/compact new` 拦截（回归宿主原生行为），shadow 安装（一次性对照）；shadow 残留 wrapper 遇 install(replace) 就地恢复（`residual-restored`）；uninstall 哨兵天然幂等 + sentinel-missing 分支 hasattr 守卫。D7 拍板（DESIGN §9 第六轮）。README 新增开头「如何使用」小节。93 测试全绿。
 - **真机验收通过**（2026-11-18 21:45:29 压缩）：注入形态 `[archived task state]` 末尾固化块完整落地，时间戳=压缩时刻，covered 167415–170642 与上段（至 170616）无缝累积衔接；本次压缩未生成 dump——**归因勘误（B 路复审 H-1）**：manifest config 段宿主 2.3.0 不消费，debug_dump=False 从未被读取，运行态 False 是 config.py 默认值的效果（非「配置实例完整刷新」）；调试开 dump 须走宿主 settings（平铺键 debug_dump 已在 _resolve_config 键列表内）。
-- **v0.2.0 基线：mode=replace 全量替换生效**（2026-11-18）。调试期（shadow + /compact new）结束，全部压缩（自动 / /compact / /compact new）走新方案；debug_dump 随切换自然关闭（默认 False）。
+- **v0.2.0 基线：mode=replace 全量替换生效**（2026-11-18）。调试期（shadow + /compact new）结束，全部压缩（自动 / /compact / /compact new）走新方案（v0.2.0 时点；v0.2.2 起 /compact new 除外，见首行）；debug_dump 随切换自然关闭（默认 False）。
 - **验收证据链**（切换依据）：中文摘要真机三会话成功（2026-11-18 三次真机压缩验收）+ /compact_str 显示 + 卸载恢复（三点位哨兵实测）+ **wire 字节对齐证死**（formatter 层 dump：common_prefix=732,678=main 全量，tail=1,095 提问段，数学闭合）+ keep-context 插件叠加兼容。87 测试全绿（v0.2.1 +3：固化块 seq 指令 / 倒挂降级 / 重试对话无固化块）。
 - **cache 0 命中定性完成**（2026-11-18 21:11 压缩）：attempt2 cache_input_tokens=84,032（input 85,340，99.98% 命中，46.9s）——框架未丢数实锤；attempt1 cache=0 = standalone 首发 prefix 首次出现（方舟隐式缓存按请求上下文粘性，摘要请求独立管线首发必 0）；**重试机制首战成功**——attempt1 撞 max_tokens 4000 截断（output 整数 4000.0=截断指纹）→ 章节校验不过 → 对话内重试 → attempt2 吃缓存红利 99.98% 命中，失败重试成本从「重头 eval」降到「增量生成」；VolcengineFormatter 字节对齐补验通过（315,926=main 全量，双 formatter 证死）。GLM 隐式缓存机制实证（上下文粘性 / standalone 首发必 0 / 重试缓存红利）详见 `DESIGN.md` §9 复审拍板记录与本文件 cache 条目。
 - 对抗复审 PASS（0 HIGH / 4M / 2L，M-1/M-2 已修复，M-3 已声明，M-4 由真机验收闭环）。

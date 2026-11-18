@@ -72,9 +72,9 @@ def set_pending_new_once(value: bool) -> None:
 class CustomScrollManager(ScrollContextManager):
     """Scroll manager; summary generation runs in shadow or replace mode.
 
-    * ``shadow``（D5 调试期，默认）：原版逻辑 100% 透传（含原版静默失败
+    * ``shadow``（D5 调试模式）：原版逻辑 100% 透传（含原版静默失败
       语义），仅 ``/compact new`` 通过一次性 flag 触发新方案；
-    * ``replace``（验收完成后）：全部压缩走新方案（v3 原语义），flag 无关。
+    * ``replace``（默认，v0.2.0 起）：全部压缩走新方案（v3 原语义），flag 无关。
     """
 
     _compactor_marker = COMPACTOR_MARKER

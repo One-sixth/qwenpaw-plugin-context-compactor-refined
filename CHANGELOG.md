@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## v0.2.2（2026-11-18）
+
+- patch 点 3（`/compact new` 一次性触发）改为 **shadow 模式专属**：`replace` 模式（默认）下不再安装该拦截，`/compact new` 回归宿主原生行为；`shadow` 模式行为不变（安装 + 一次性对照）
+- install 状态新增 `skipped(mode=replace)` 取值；uninstall 对未打点位幂等跳过（原有哨兵机制天然支持）
+- README 开头新增「如何使用」小节（生效场景 + 查看摘要方式）；「三处补强」章节改为按模式精准描述
+- 测试 91 → 93（+1：replace 模式跳过 patch 3；+1：shadow 残留就地恢复）
+
 ## v0.2.1（2026-11-18）
 
 - 摘要末端固化 recall 指引块：成功出口纯代码追加「压缩完成时间戳（当地时间 + UTC 偏移）+ recall_history 三件套即用指令（expand 含 covered 累积区间 / search / recall_tool）」
