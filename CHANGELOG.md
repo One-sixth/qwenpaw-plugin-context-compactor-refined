@@ -1,5 +1,17 @@
 # CHANGELOG
 
+## v0.2.4（2026-11-22）
+
+- 压缩边界 marker：压缩驱逐后在保留轮之后注入一条边界提示，让 LLM 区分「上方回合拥有全量上下文、下方回合需经摘要/召回」，修掉模型误以为上一轮基于摘要跑的误区
+- marker 借 QwenPaw HintBlock 机制实现「LLM 可见、UI 不显示」：`AssistantMsg(name="compaction_boundary", content=[HintBlock(hint=文案, source="compaction_boundary")])`——agentscope formatter 把 HintBlock 转独立 user 消息（LLM 看到），console/PawApp 的 history converter 跳过 hint block（UI 不显示）。UserMsg/SystemMsg 拒 hint block，必须 AssistantMsg 承载
+- 文案前加 `[系统提示：压缩边界]` 标识（原 `[压缩边界]`），让 LLM 一眼认出是系统注入的边界标记而非普通 user 消息（真机验证发现 LLM 被 placeholder 的压缩元信息淹没、没注意到原 marker）
+- marker 位置在保留轮之后（tail 末尾），不用 `_active_turn_tail` 切分（单轮陷阱：唯一那轮既是保留轮又是 active turn，按 active turn 前插会把 marker 挤到最前、语义反掉）
+- 不进 `_synthetic_ids`、不打 tag，随正常驱逐消失只标最近一次边界；flag 分流精确区分驱逐路径（插）与恢复路径（不插），abort 残留由 load_state 兜底清零
+- 文案去掉「seq 连续不重置」——seq 跳跃且跨会话，诱导模型续号会召回到别的会话的被驱逐上下文
+- 测试 93 → 97（+4：驱逐末尾插/恢复不插/AssistantMsg+HintBlock 非 synthetic/无 active turn 边界）
+- plugin.json 版本号 0.2.2 → 0.2.4；README 补 marker 功能说明与测试数
+
+
 ## v0.2.2（2026-11-18）
 
 - patch 点 3（`/compact new` 一次性触发）改为 **shadow 模式专属**：`replace` 模式（默认）下不再安装该拦截，`/compact new` 回归宿主原生行为；`shadow` 模式行为不变（安装 + 一次性对照）

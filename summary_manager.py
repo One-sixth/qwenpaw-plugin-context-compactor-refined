@@ -45,6 +45,17 @@ _module_config: CompactorConfig | None = None
 # 在 _process_compact 调用栈内构造时读取；patch 点 3 finally 兜底复位）
 _pending_new_once: bool = False
 
+# 压缩边界 marker 文案（方案 C 补强；确定性、无时间戳、无 seq 算术诱导——
+# seq 跳跃且跨会话，诱导模型续号会召回到别的会话的被驱逐上下文）。
+# 追加到保留轮之后（tail 末尾）；AssistantMsg 承载 HintBlock（formatter 转
+# user 消息、UI 不显示），不进 _synthetic_ids、不打 tag，随正常驱逐消失，
+# 只标最近一次边界。
+BOUNDARY_MARKER_TEXT = (
+    "[系统提示：压缩边界] 上方为压缩前保留的近期回合——它们运行时拥有全量上下文"
+    "（含下方摘要所归档的更早内容），并非基于摘要跑出的；"
+    "下方为压缩后新回合，需经摘要/召回才能看到上方更早内容。"
+)
+
 
 def set_module_config(config: CompactorConfig | None) -> None:
     """Set the config snapshot used by subsequently constructed managers."""
@@ -86,6 +97,7 @@ class CustomScrollManager(ScrollContextManager):
         self._compactor_use_new_once = _pending_new_once
         _pending_new_once = False  # 一次性：读取即清除（防泄漏到后续构造）
         self._compactor_new_active = False
+        self._compactor_marker_pending = False
 
     def _should_use_new_summary(self) -> bool:
         if self._compactor_config.mode == MODE_REPLACE:
@@ -105,6 +117,10 @@ class CustomScrollManager(ScrollContextManager):
         Legacy mode keeps the upstream behavior verbatim, including its
         silent-failure semantics. Refined mode wraps the pipeline in a
         timeout that raises instead of swallowing."""
+        # 压缩驱逐路径置位：_rebuild_context 据此插边界 marker。restore 路径
+        # （reconcile_loaded_context）不经此方法，天然不插。abort（raise）后
+        # flag 残留，由 load_state 清零，不会泄漏到下次 restore。
+        self._compactor_marker_pending = True
         use_new = self._should_use_new_summary()
         self._compactor_use_new_once = False  # 一次性消费（立即复位）
         if not use_new:
@@ -168,6 +184,10 @@ class CustomScrollManager(ScrollContextManager):
         silently drops (its ``ContinuationSummary.from_dict`` returns None
         for free_text dicts on KeyError)."""
         super().load_state(data)
+        # restore 路径清零：防上次压缩 abort 残留的 flag 在
+        # reconcile_loaded_context → _rebuild_context 误插 marker
+        # （restore 不是压缩边界）。
+        self._compactor_marker_pending = False
         if not isinstance(data, dict):
             return
         raw = data.get("continuation_summary")
@@ -180,3 +200,49 @@ class CustomScrollManager(ScrollContextManager):
                     "context-compactor: free_text summary in checkpoint "
                     "failed validation; dropping to index-only",
                 )
+
+    def _rebuild_context(self, agent: Any, tail: list[Any]) -> None:
+        """Insert the compression-boundary marker after the retained tail,
+        then delegate to the upstream rebuild (``[placeholder] + tail``).
+
+        Only on the eviction path (``_compactor_marker_pending`` set by
+        ``_update_continuation_summary``); the restore path
+        (``reconcile_loaded_context``) leaves it clear, so no marker there.
+        The marker is an AssistantMsg carrying a HintBlock: the agentscope
+        formatter emits the hint as a separate ``role="user"`` message (the
+        LLM sees the boundary note) while the console/PawApp history converter
+        skips hint blocks entirely (the marker never appears in the UI).
+        No ``_synthetic_ids``, no tag — it rides normal eviction and marks only
+        the latest boundary.
+        """
+        if not getattr(self, "_compactor_marker_pending", False):
+            super()._rebuild_context(agent, tail)
+            return
+        self._compactor_marker_pending = False
+        # marker 追加到 tail 末尾（保留轮之后）：上方=压缩前保留轮（运行时拥有
+        # 全量上下文），下方=压缩后新回合（下一轮 user 消息落在此后）。不用
+        # _active_turn_tail 切分——单轮会话里唯一那轮既是保留轮又是 active
+        # turn，按 active turn 前插会把 marker 挤到最前、语义反掉。
+        marker = self._build_boundary_marker()
+        tail = [*tail, marker]
+        super()._rebuild_context(agent, tail)
+
+    def _build_boundary_marker(self) -> Any:
+        """Build the compression-boundary marker as an AssistantMsg + HintBlock.
+
+        UserMsg and SystemMsg reject hint blocks (agentscope Msg validation:
+        "User message can only contain text blocks or data blocks" / "System
+        message can only contain text blocks"), so the marker must ride an
+        AssistantMsg. The agentscope formatter then emits the HintBlock as a
+        separate ``role="user"`` message — the LLM reads the boundary note as a
+        user message — while the console/PawApp history converter skips hint
+        blocks entirely, so the marker stays out of the UI transcript.
+        """
+        from agentscope.message import AssistantMsg, HintBlock
+
+        return AssistantMsg(
+            name="compaction_boundary",
+            content=[
+                HintBlock(hint=BOUNDARY_MARKER_TEXT, source="compaction_boundary"),
+            ],
+        )
