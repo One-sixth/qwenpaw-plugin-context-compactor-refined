@@ -17,6 +17,7 @@ from conftest import plugin_module
 _pkg = plugin_module()
 generation = _pkg.generation
 config_mod = _pkg.config
+prompts_mod = _pkg.prompts
 
 SummaryGenerationFailed = generation.SummaryGenerationFailed
 missing_sections = generation.missing_sections
@@ -97,7 +98,7 @@ class FakeManager:
         return "".join(parts).strip()
 
 
-def make_agent(responder, context_size=128000, base_tools=None):
+def make_agent(responder, base_tools=None):
     """agent.model = async callable; responder(chunks_so_far) → str|exception.
 
     Also provides ``_prepare_model_input`` (the same-source construction
@@ -116,7 +117,6 @@ def make_agent(responder, context_size=128000, base_tools=None):
         return responder(len(calls), kwargs)
 
     agent = SimpleNamespace(model=model, _prepare_model_input=prepare_model_input)
-    agent.model.context_size = context_size
     agent.model_calls = calls
     return agent
 
@@ -151,16 +151,39 @@ def make_middle(*seqs):
     ]
 
 
-def run(manager, agent, middle, focus_hint=""):
+def run(manager, agent, middle, focus_hint="", config=None):
     return asyncio.run(
         run_conversation_summary(
             manager,
             agent,
             middle,
             focus_hint=focus_hint,
-            config=config_mod.CompactorConfig(),
+            config=config or config_mod.CompactorConfig(),
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# build_question（M-复审 M-1：缺 {max_chars} 槽位天然容忍；坏模板显式失败）
+# ---------------------------------------------------------------------------
+
+
+class TestBuildQuestion:
+    def test_custom_template_without_max_chars_slot(self):
+        """自定义模板缺 {max_chars} 槽位 → 多余 kwargs 无害，正常渲染。"""
+        q = prompts_mod.build_question(
+            ("当前任务",),
+            template="章节：{sections_block}",
+        )
+        assert q == "章节：## 当前任务"
+
+    def test_custom_template_unknown_placeholder_raises(self):
+        """未知占位符 → KeyError 显式失败（坏模板配置不被静默吞）。"""
+        with pytest.raises(KeyError):
+            prompts_mod.build_question(
+                ("当前任务",),
+                template="章节：{sections_block} 未知：{foo}",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +338,8 @@ class TestSuccessPaths:
         summary = run(manager, agent, make_middle(1))
         assert summary.covered_seq == (7, 7)
 
-    def test_output_tokens_formula(self):
+    def test_output_tokens_not_passed_by_default(self):
+        """output_tokens=0（默认）→ 请求 kwargs 不含 max_tokens（端点默认）。"""
         manager = FakeManager(seq_by_id={"id1": (3, 3)})
         seen = {}
 
@@ -323,9 +347,99 @@ class TestSuccessPaths:
             seen.update(kwargs)
             return plain_response(FULL_REPLY)
 
-        agent = make_agent(responder, context_size=32000)
+        agent = make_agent(responder)
         run(manager, agent, make_middle(1))
-        assert seen["max_tokens"] == max(256, min(4000, 32000 // 4))
+        assert "max_tokens" not in seen
+
+    def test_output_tokens_raised_to_32000(self):
+        """output_tokens>0 且 ≤32000 → 抬高到 32000。"""
+        manager = FakeManager(seq_by_id={"id1": (3, 3)})
+        seen = {}
+
+        def responder(n, kwargs):
+            seen.update(kwargs)
+            return plain_response(FULL_REPLY)
+
+        agent = make_agent(responder)
+        cfg = config_mod.CompactorConfig(output_tokens=8000)
+        run(manager, agent, make_middle(1), config=cfg)
+        assert seen["max_tokens"] == 32000
+
+    def test_output_tokens_above_32000_kept(self):
+        """output_tokens>32000 → 保持用户显式值。"""
+        manager = FakeManager(seq_by_id={"id1": (3, 3)})
+        seen = {}
+
+        def responder(n, kwargs):
+            seen.update(kwargs)
+            return plain_response(FULL_REPLY)
+
+        agent = make_agent(responder)
+        cfg = config_mod.CompactorConfig(output_tokens=40000)
+        run(manager, agent, make_middle(1), config=cfg)
+        assert seen["max_tokens"] == 40000
+
+    def test_prompt_max_chars_soft_cap_injected(self):
+        """提问模板注入软约束（15000 字符）。"""
+        manager = FakeManager(seq_by_id={"id1": (3, 3)})
+
+        def responder(n, kwargs):
+            return plain_response(FULL_REPLY)
+
+        agent = make_agent(responder)
+        run(manager, agent, make_middle(1))
+        question = str(agent.model_calls[0]["messages"][-1].content)
+        assert "15000" in question
+
+    def test_hard_truncate_sections_survive(self):
+        """超长回复截断到 hard_max_chars；截断后章节标题幸存 → 直接入库
+        （截断稿 + 固化块，单次调用零重试）。"""
+        long_reply = FULL_REPLY + "x" * 50
+        manager = FakeManager(seq_by_id={"id1": (3, 3)})
+        agent = make_agent(lambda n, k: plain_response(long_reply))
+        cfg = config_mod.CompactorConfig(hard_max_chars=len(FULL_REPLY) + 10)
+        summary = run(manager, agent, make_middle(1), config=cfg)
+        assert len(agent.model_calls) == 1
+        # 入库 = 截断稿（hard 上限）+ 末端固化块
+        assert summary.text.startswith(FULL_REPLY)
+        assert "## 待办" in summary.text
+        assert cfg.hard_max_chars < len(summary.text) < cfg.hard_max_chars + 2000
+
+    def test_hard_truncate_default_20000(self):
+        """默认 config（hard_max_chars=20000）→ 3 万字符回复被截到 2 万。"""
+        long_reply = FULL_REPLY + "x" * 30000
+        manager = FakeManager(seq_by_id={"id1": (3, 3)})
+        agent = make_agent(lambda n, k: plain_response(long_reply))
+        summary = run(manager, agent, make_middle(1))
+        assert len(summary.text) >= 20000
+        assert len(summary.text) < 20000 + 2000
+
+    def test_hard_truncate_lost_section_retries(self):
+        """截断把最后一章标题截掉 → missing 非空 → 对话内重试救回。"""
+        # 前四章 + 填充把 "## 待办" 推到截断点之后
+        padded = (
+            "## 当前任务\n收尾压缩摘要插件\n\n"
+            "## 当前状态\nPhase 1 代码落盘\n\n"
+            "## 约束\ncache 对齐优先\n\n"
+            "## 决定\nD2 不降级\n\n" + "y" * 50
+        )
+        long_reply = padded + "## 待办\n真机验收"
+        calls: list[list] = []
+
+        def responder(n, kwargs):
+            calls.append(kwargs["messages"])
+            return plain_response(FULL_REPLY if n > 1 else long_reply)
+
+        manager = FakeManager(seq_by_id={"id1": (3, 3)})
+        agent = make_agent(responder)
+        cfg = config_mod.CompactorConfig(hard_max_chars=len(padded) + 5)
+        summary = run(manager, agent, make_middle(1), config=cfg)
+        assert len(agent.model_calls) == 2
+        # 重试对话里带截断稿 + 缺章节纠正（"待办"）
+        retry_messages = calls[1]
+        assert "y" * 10 in str(retry_messages[-2].content)  # 失败稿已追加
+        assert "待办" in str(retry_messages[-1].content)
+        assert summary.text.startswith(FULL_REPLY)
 
     def test_focus_hint_appended(self):
         manager = FakeManager(seq_by_id={"id1": (3, 3)})
@@ -534,6 +648,29 @@ class TestConfigParsing:
     def test_negative_retries_rejected(self):
         with pytest.raises(ValueError):
             config_mod.CompactorConfig(max_retries=-1)
+
+    def test_chars_keys_mapping_and_defaults(self):
+        """chars 两键正常值生效；0/负数非法值 skip 回落默认（M-复审 L-1）。"""
+        cfg = config_mod.config_from_mapping(
+            {"prompt_max_chars": 12000, "hard_max_chars": 18000},
+        )
+        assert cfg.prompt_max_chars == 12000
+        assert cfg.hard_max_chars == 18000
+        for bad in (0, -5):
+            cfg_bad = config_mod.config_from_mapping(
+                {"hard_max_chars": bad, "prompt_max_chars": bad},
+            )
+            assert cfg_bad.hard_max_chars == 20000  # 默认
+            assert cfg_bad.prompt_max_chars == 15000  # 默认
+
+    def test_chars_direct_invalid_rejected(self):
+        """直接构造 dataclass 传非法值 → __post_init__ 显式 ValueError
+        （类型/值域双检：float/bool/str/0/负数）。"""
+        for bad in (-5, 0, 20.5, True, "20"):
+            with pytest.raises(ValueError):
+                config_mod.CompactorConfig(hard_max_chars=bad)
+            with pytest.raises(ValueError):
+                config_mod.CompactorConfig(prompt_max_chars=bad)
 
 
 # ---------------------------------------------------------------------------

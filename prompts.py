@@ -26,8 +26,9 @@ QUESTION_TEMPLATE = """请基于以上完整对话，生成一份压缩摘要（
 2. 若以上对话开头的归档索引区块中已有旧摘要，请融合其仍然有效的信息，生成覆盖全部历史的新摘要，不要丢失旧摘要中仍有效的事实。
 3. 内容用中文书写；只陈述以上对话支持的事实，不得编造；identifier（路径、版本号、错误码、函数名等）逐字保留；不得复制密码、token、API key 等敏感信息。
 4. 对话中以 [scroll folded] 标记的条目是已折叠的工具结果占位符，不要把占位符文本本身写入摘要；如需提及相应工具调用，只记录工具名与调用意图。
-5. 每个章节至少一行；没有内容的章节写 (none)。
-6. 直接输出摘要正文，不要输出任何解释或额外内容。"""
+5. 摘要正文总长度不可超过 {max_chars} 字符（含标点与空格），超出须精简压缩。
+6. 每个章节至少一行；没有内容的章节写 (none)。
+7. 直接输出摘要正文，不要输出任何解释或额外内容。"""
 
 # focus_hint 非空时的尾部插槽（追加在提问末尾，不破坏前缀 cache）。
 # 约束文案沿用原版语义：只调整优先级、不是证据、不能覆盖输出协议。
@@ -48,11 +49,19 @@ def build_question(
     focus_hint: str = "",
     *,
     template: str = QUESTION_TEMPLATE,
+    max_chars: int = 15000,
 ) -> str:
     """Render the single question template with the section list and an
-    optional trailing focus hint."""
+    optional trailing focus hint. ``max_chars`` fills the ``{max_chars}``
+    slot; a custom template without that slot renders fine (str.format
+    tolerates extra kwargs). Unknown placeholders raise — bad template
+    config fails explicitly (wrapped into SummaryGenerationFailed by the
+    generation loop; compression aborts, no eviction)."""
     sections_block = "\n".join(f"## {name}" for name in sections)
-    question = template.format(sections_block=sections_block)
+    question = template.format(
+        sections_block=sections_block,
+        max_chars=max_chars,
+    )
     hint = (focus_hint or "").strip()
     if hint:
         question += FOCUS_HINT_TEMPLATE.format(hint=hint)

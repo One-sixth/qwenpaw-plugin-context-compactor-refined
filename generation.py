@@ -147,15 +147,13 @@ async def run_conversation_summary(
         else new_span
     )
 
-    # 输出预算：沿用宿主公式；config.output_tokens > 0 时显式覆盖
+    # 输出预算：0 = 不传 max_tokens（端点默认）；>0 = 传入，≤32000 时
+    # 抬高到 32000（思考+正文总预算，2026-11-23 定案，替代宿主公式）
+    output_tokens: int | None = None
     if config.output_tokens > 0:
-        output_tokens = config.output_tokens
-    else:
-        context_size = max(
-            1,
-            int(getattr(agent.model, "context_size", 0) or 0),
+        output_tokens = (
+            32000 if config.output_tokens <= 32000 else config.output_tokens
         )
-        output_tokens = max(256, min(4000, context_size // 4))
 
     try:
         return await _generation_attempts(
@@ -220,7 +218,7 @@ async def _generation_attempts(
     focus_hint: str,
     config: CompactorConfig,
     covered: tuple[int, int],
-    output_tokens: int,
+    output_tokens: int | None,
 ) -> FreeTextSummary:
     """The retry loop itself. Only missing-section outcomes retry here;
     any model exception propagates to the caller untouched."""
@@ -236,6 +234,7 @@ async def _generation_attempts(
         config.sections,
         focus_hint,
         template=config.question_template,
+        max_chars=config.prompt_max_chars,
     )
     messages.append(
         UserMsg(name=SUMMARY_REQUEST_NAME, content=question),
@@ -259,6 +258,10 @@ async def _generation_attempts(
         )
         if config.debug_dump:
             _dump_usage(agent, attempt + 1, usage, reply)
+        # 硬上限截断（纯代码，2026-11-23 定案）：超长原稿截到 hard_max_chars，
+        # 截掉章节 → 下方 missing 检查自然非空 → 走既有对话内重试通道。
+        if len(reply) > config.hard_max_chars:
+            reply = reply[: config.hard_max_chars]
         missing = missing_sections(reply, config.sections)
         if not missing:
             # 成功：对话文本零落盘（token 用量正常记录）。
@@ -290,7 +293,7 @@ async def _invoke_model(
     messages: list["Msg"],
     tools: Any,
     tool_choice: Any,
-    max_tokens: int,
+    max_tokens: int | None,
     disable_thinking: bool,
 ) -> tuple[str, dict | None]:
     """Call ``agent.model`` directly and consume the response.
@@ -300,12 +303,15 @@ async def _invoke_model(
     mirrors the upstream ``_generate_plain_summary`` (isasyncgen branch +
     interruption guard, R2-发现3). Any exception the model raises
     propagates untouched so provider errors fail immediately.
+    ``max_tokens`` is omitted from the call when ``None`` (endpoint
+    default output budget).
     """
     kwargs: dict[str, Any] = {
         "messages": messages,
-        "max_tokens": max_tokens,
         "disable_thinking": disable_thinking,
     }
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
     if tools:
         kwargs["tools"] = tools
         if tool_choice is not None:

@@ -31,7 +31,10 @@ class CompactorConfig:
     mode: str = MODE_REPLACE  # D5 验收完成（2026-11-18）：全量替换原版；shadow 分流保留待配
     sections: tuple[str, ...] = DEFAULT_SECTIONS
     max_retries: int = 3  # 首次 1 + 重试 3 = 共 4 次尝试（Q2 定案）
-    output_tokens: int = 0  # 0 = 按宿主公式推导 max(256, min(4000, ctx//4))
+    output_tokens: int = 0  # 0 = 不传 max_tokens（端点默认）；>0 = 传入，
+    # 且 ≤32000 时抬高到 32000（思考+正文总预算，2026-11-23 定案）
+    prompt_max_chars: int = 15000  # 软约束：提问模板告知正文字符上限
+    hard_max_chars: int = 20000  # 硬上限：超长原稿纯代码截断，章节缺失走重试
     disable_thinking: bool = True
     cache_mode: str = CACHE_PRESERVE_TOOLS
     debug_dump: bool = False  # wire-dump 调试钩子（临时；宿主 settings 控制）
@@ -47,6 +50,13 @@ class CompactorConfig:
             raise ValueError("sections must not be empty")
         if self.max_retries < 0:
             raise ValueError("max_retries must be >= 0")
+        for name in ("prompt_max_chars", "hard_max_chars"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                # 类型/值域双检：float 会击穿切片下标、bool=True 静默截 1 字符、
+                # str 抛裸 TypeError——统一显式 ValueError（公开 dataclass 的
+                # 直接构造路径也被守住，生产 mapping 层另有回落）
+                raise ValueError(f"{name} must be a positive int, got {value!r}")
         if self.cache_mode not in _VALID_CACHE_MODES:
             raise ValueError(
                 f"cache_mode must be one of {_VALID_CACHE_MODES}, "
@@ -80,6 +90,14 @@ def config_from_mapping(raw: dict | None) -> CompactorConfig:
         elif key == "output_tokens":
             if isinstance(value, int) and not isinstance(value, bool):
                 kwargs[key] = max(0, int(value))
+        elif key == "prompt_max_chars":
+            # 非法值（0/负数/非 int）skip 回落默认，避免穿透 __post_init__
+            # 的 ValueError 导致插件激活整体回滚（与 mode 处理一致）
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                kwargs[key] = int(value)
+        elif key == "hard_max_chars":
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                kwargs[key] = int(value)
         elif key == "disable_thinking":
             kwargs[key] = bool(value)
         elif key == "debug_dump":

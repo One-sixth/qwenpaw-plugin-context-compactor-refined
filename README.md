@@ -79,6 +79,10 @@ QwenPaw 在上下文过长时会自动压缩历史对话，生成一份摘要替
 
 压缩驱逐后在保留轮之后注入一条边界提示，让 LLM 能区分「上方回合运行时拥有全量上下文、下方回合需经摘要/召回」。UI 不显示该消息（借 QwenPaw HintBlock 机制：formatter 转独立 user 消息喂 LLM、history converter 跳过），只标最近一次边界，随正常驱逐消失。
 
+**9. 摘要长度控制（v0.2.5）**
+
+摘要正文双约束：提问模板软约束「不可超过 15000 字符」（模型自主精简）+ 生成后纯代码硬截断到 20000 字符（提示词不写，超长兜底）。截断后照常跑章节校验——截掉章节标题则走既有对话内重试让模型重写，标题幸存（截断点在章节内容内部）则直接入库。max_tokens 输出预算同步简化：默认不传（端点默认），显式配置 ≤32000 时抬高到 32000（原宿主公式 cap 4000 曾把正文挤到服务端截断且截断不可察觉）。
+
 
 各点位独立降级——某个辅助点位失效只影响对应入口，不阻塞压缩主体。卸载时宿主代码逆序完整恢复原状；但卸载前已生成的自由文本摘要，宿主原版无法读取——旧会话恢复后摘要将不可用（归档索引与 recall 不受影响）。卸载前如需保留摘要文本，请先在会话中查看并复制。
 
@@ -115,15 +119,20 @@ qwenpaw plugin install <zip> --force
 
 ## 配置（可选）
 
-所有配置默认值开箱即用。配置入口 = **宿主 settings**（`config.plugins.qwenpaw-plugin-context-compactor-refined`，平铺键或 `compactor` 嵌套段均可，若两者同时配置以嵌套段为准）：
+所有配置默认值开箱即用。配置入口 = **宿主 settings**（工作区 `config.json` 的 `config.plugins.qwenpaw-plugin-context-compactor-refined`，或通过宿主插件设置页；源码见 `qwenpaw/config/utils.py:get_config_path`）：
+
+- **平铺键与 `compactor` 嵌套段二选一**：嵌套段一旦存在，**平铺键全部忽略**（整体替换，不是逐键合并——把不同键分放两处会静默丢键）。
+- **生效方式**：通过宿主插件设置页修改后走 config update，宿主会 reload 插件实例；若直接编辑 `config.json`，重启宿主最稳妥。生效后下一次压缩用新配置。
 
 | 键 | 默认 | 说明 |
 |----|------|------|
 | `mode` | `replace` | 另一取值 `shadow` = 调试用透传模式（默认透传原版，仅 `/compact new` 触发新管线并注册其拦截；v0.2.2 起 `replace` 下不再注册该拦截） |
 | `sections` | 当前任务/当前状态/约束/决定/待办 | 必备章节 |
 | `max_retries` | 3 | 重试上限（首次 1 + 重试 3 = 4 次尝试） |
-| `output_tokens` | 0 | 0 = 按宿主公式自动推导 |
-| `disable_thinking` | true | 禁思考 |
+| `output_tokens` | 0 | max_tokens 输出预算（token 域）：0 = 插件**不传**（宿主 compat 层会注入模型卡 `generate_kwargs` 的 max_tokens，本机 qwen/glm 实测 33000/36000；模型卡无配置则走端点默认）；>0 = 传入且 ≤32000 时抬高到 32000，>32000 保持。注意：不传时预算由模型卡决定，若模型卡把该值改小，长摘要可能被服务端截断 |
+| `prompt_max_chars` | 15000 | 软约束：提问模板告知摘要正文的字符上限 |
+| `hard_max_chars` | 20000 | 硬上限：超长原稿纯代码截断（只数正文，不含思考）；截掉章节标题则走既有重试通道 |
+| `disable_thinking` | true | 尽力禁思考（经 compat 层翻译；对 qwen/glm 等无声明禁思考 wire 参数的模型实际无效，思考仍占 token 预算） |
 | `cache_mode` | `preserve_tools` | `no_tools` = provider 不支持 `tool_choice="none"` 时降级 |
 | `debug_dump` | false | 排查缓存对齐用：把发给 provider 的原始请求字节 dump 到本地文件做比对 |
 | `question_template` / `retry_template` | 见 `prompts.py` | 提问与重试纠正模板的自定义覆盖（一般无需修改） |
@@ -136,4 +145,4 @@ qwenpaw plugin install <zip> --force
 python -m pytest tests -q
 ```
 
-97 个测试（含固化块、配置解析、patch 3 模式分流与压缩边界 marker 专项）。设计细节与全部拍板记录见 `DESIGN.md`。
+107 个测试（含固化块、配置解析、patch 3 模式分流、压缩边界 marker 与摘要长度控制专项）。设计细节与全部拍板记录见 `DESIGN.md`。

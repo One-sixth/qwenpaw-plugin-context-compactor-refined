@@ -352,7 +352,7 @@ qwenpaw-plugin-context-compactor-refined/
 | `mode` | `replace` | 默认全量替换（D5）；`shadow`=调试用透传模式（默认透传原版，仅 `/compact new` 触发新管线并注册其拦截；D7 起 replace 下不注册） |
 | `sections` | `["当前任务","当前状态","约束","决定","待办"]` | 必备章节（中文，Q1 定案） |
 | `max_retries` | `3` | 重新生成上限（首次 1 + 重试 3 = 共 4 次尝试，Q2 定案） |
-| `output_tokens` | `0` | 摘要输出预算：0 = 按宿主公式 `max(256, min(4000, ctx//4))` 推导 |
+| `output_tokens` | `0` | ~~摘要输出预算：0 = 按宿主公式 `max(256, min(4000, ctx//4))` 推导~~ **【v0.2.5 已取代】**：0 = 不传 max_tokens（端点默认）；>0 且 ≤32000 抬到 32000；>32000 保持。旧公式 4000 cap 曾导致正文撞线截断且不可察觉（见 CHANGELOG v0.2.5） |
 | `disable_thinking` | `True` | 禁思考（GLM 思考 ~12 token/s 会烧预算） |
 | `cache_mode` | `"preserve_tools"` | `preserve_tools`(ToolChoice(mode="none")，定案) / `no_tools`(provider 不支持时降级) |
 | `question` | 见 prompts.py | 提问模板（单一 + focus_hint 插槽 + 防污染句，Q5/D1 定案） |

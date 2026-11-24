@@ -72,6 +72,7 @@ class ContextCompactorRefinedPlugin:
             flat = {}
             for key in (
                 "mode", "sections", "max_retries", "output_tokens",
+                "prompt_max_chars", "hard_max_chars",
                 "disable_thinking", "cache_mode", "debug_dump",
                 "question_template", "retry_template",
             ):
